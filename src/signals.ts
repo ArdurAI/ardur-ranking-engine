@@ -43,7 +43,10 @@ export function corroborationScore(ownerCount: number, profile: WeightProfile): 
 
 /** Credibility value of one source tier (maps aggregator taxonomy → model tier). */
 export function tierValue(tier: SourceTier, profile: WeightProfile): number {
-  const credibility: CredibilityTier = profile.sourceTier.rankByTaxonomy[tier];
+  // Cast to allow partial-record lookup: upstream JSON may carry unknown tier strings.
+  // Unknown tiers clamp to T4 (lowest credibility) rather than silently emitting NaN.
+  const rankMap = profile.sourceTier.rankByTaxonomy as Partial<Record<string, CredibilityTier>>;
+  const credibility = rankMap[tier] ?? 'T4';
   return profile.sourceTier.values[credibility];
 }
 
