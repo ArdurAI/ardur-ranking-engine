@@ -128,8 +128,10 @@ export type { AuditInput } from './audit.ts';
 export interface RankingOptions {
   /** Named weight profile to apply. Defaults to `balanced@v1`. */
   weightProfile?: string;
-  /** Override the wall clock (testing/replay). */
+  /** Override the wall clock (testing/replay). Drives generatedAt and runId. */
   now?: Date;
+  /** Override the generated runId (agent idempotency key). */
+  runId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +422,7 @@ export function runRanking(
     schemaVersion: SCHEMA_VERSION,
     contractRevision: CONTRACT_REVISION,
     artifact: 'ranking',
-    runId: generateRunId(aggregation.cycle.id, now),
+    runId: options.runId ?? generateRunId(aggregation.cycle.id, now),
     upstreamRunId: aggregation.runId,
     generatedAt: now.toISOString(),
     cycle: aggregation.cycle,

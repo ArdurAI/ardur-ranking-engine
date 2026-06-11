@@ -21,8 +21,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --experimental-strip-types src/smoke.test.ts src/model.test.ts src/ranking.test.ts src/hostile.test.ts",
-    "rank": "node --experimental-strip-types src/cli.ts"
+    "test": "node --test --experimental-strip-types src/smoke.test.ts src/model.test.ts src/ranking.test.ts src/hostile.test.ts src/runners.test.ts",
+    "rank": "node --experimental-strip-types src/runners.ts"
   },
   "keywords": [
     "ardur",
