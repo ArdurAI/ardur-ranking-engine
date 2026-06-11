@@ -35,9 +35,11 @@
     "type": "git",
     "url": "https://github.com/ArdurAI/ardur-ranking-engine.git"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@ardurai/contracts": "github:ArdurAI/ardur-contracts#dec582a"
+  },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/node": "^22.10.0"
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
   }
 }

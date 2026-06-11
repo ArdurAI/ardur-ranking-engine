@@ -162,22 +162,22 @@ test('#7 runRanking: member item with unknown tier does not poison score.total',
 // ---------------------------------------------------------------------------
 
 test('#8 validateAggregationArtifact: rejects null', () => {
-  assert.throws(() => validateAggregationArtifact(null), /expected a JSON object/);
+  assert.throws(() => validateAggregationArtifact(null), /schemaVersion mismatch/);
 });
 
 test('#8 validateAggregationArtifact: rejects a plain string (even if JSON-looking)', () => {
   assert.throws(
     () => validateAggregationArtifact('{"schemaVersion":"ardur-content-pipeline/v1"}'),
-    /expected a JSON object/,
+    /schemaVersion mismatch/,
   );
 });
 
 test('#8 validateAggregationArtifact: rejects an array', () => {
-  assert.throws(() => validateAggregationArtifact([]), /expected a JSON object/);
+  assert.throws(() => validateAggregationArtifact([]), /schemaVersion mismatch/);
 });
 
 test('#8 validateAggregationArtifact: rejects a number', () => {
-  assert.throws(() => validateAggregationArtifact(42), /expected a JSON object/);
+  assert.throws(() => validateAggregationArtifact(42), /schemaVersion mismatch/);
 });
 
 test('#8 validateAggregationArtifact: rejects missing schemaVersion', () => {
@@ -214,7 +214,7 @@ test('#8 validateAggregationArtifact: rejects wrong artifact type', () => {
         data: { clustersByTopic: {}, itemsByTopic: {} },
         cycle: {},
       }),
-    /expected artifact="aggregation"/,
+    /artifact=aggregation/,
   );
 });
 
@@ -226,11 +226,13 @@ test('#8 validateAggregationArtifact: rejects missing data field', () => {
         artifact: 'aggregation',
         cycle: {},
       }),
-    /missing or invalid "data"/,
+    /non-null object at .data/,
   );
 });
 
 test('#8 validateAggregationArtifact: rejects data as array', () => {
+  // Array passes the generic envelope gate (typeof [] === 'object') but fails
+  // the engine-specific clustersByTopic structural check.
   assert.throws(
     () =>
       validateAggregationArtifact({
@@ -239,7 +241,7 @@ test('#8 validateAggregationArtifact: rejects data as array', () => {
         data: [],
         cycle: {},
       }),
-    /missing or invalid "data"/,
+    /clustersByTopic/,
   );
 });
 
