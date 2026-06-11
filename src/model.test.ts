@@ -145,10 +145,12 @@ test('audit entry is lossless + reproducible + deterministically identified', ()
     topic: 'kubernetes',
     rating,
     confidence: 0.82,
+    confidenceInputs: { corroboration: 0.63, tierConf: 1.0, cohesion: 1.0, agreement: 0.77 },
     gate: 'auto',
     independentOwners: 4,
     halfLifeHours: recencyHalfLifeHours(0.9, P),
     ageHours: 6,
+    factCorroboration: 0,
     weightProfile: P.id,
     rankedAt: new Date('2026-06-11T00:00:00Z'),
   };

@@ -25,15 +25,20 @@ import type {
   AggregationArtifact,
   AuditEntry,
   Cluster,
+  ExtractedFact,
   RankedCluster,
   RankingArtifact,
+  RankingData,
   ScoreBreakdown,
+  SourceDocument,
+  SourceRef,
 } from './contracts.ts';
-import { SCHEMA_VERSION } from './contracts.ts';
+import { CONTRACT_REVISION, SCHEMA_VERSION } from './contracts.ts';
 import { DEFAULT_WEIGHT_PROFILE, getWeightProfile } from './weights.ts';
 import type { WeightProfile } from './weights.ts';
 import {
   corroborationSignal,
+  factCorroborationSignal,
   technicalSignificanceSignal,
   sourceTierSignal,
   engagementSignal,
@@ -89,6 +94,7 @@ export {
   ownerDiversity,
   platformVelocities,
   corroborationSignal,
+  factCorroborationSignal,
   engagementSignal,
 } from './signals.ts';
 export type { SignalInputs } from './signals.ts';
@@ -152,12 +158,20 @@ function scoreCluster(
   itemsById: Map<string, AggregatedItem>,
   profile: WeightProfile,
   now: Date,
+  clusterFacts?: ExtractedFact[],
+  clusterDocuments?: SourceDocument[],
 ): ScoredEntry {
   const members = cluster.memberIds
     .map((id) => itemsById.get(id))
     .filter((item): item is AggregatedItem => item !== undefined);
 
-  const signalInput: SignalInputs = { cluster, members, now, profile };
+  const signalInput: SignalInputs = {
+    cluster,
+    members,
+    now,
+    profile,
+    ...(clusterFacts !== undefined && { facts: clusterFacts }),
+  };
 
   // -- Core signals --
   const corroboration = corroborationSignal(signalInput);
@@ -184,16 +198,22 @@ function scoreCluster(
   const independentOwners = countIndependentOwners(signalInput);
   const agreement = agreementScore(corroboration, engagement);
 
-  const confidence = computeConfidence(
-    {
-      corroboration,
-      tierConf,
-      cohesion: 1.0, // stub: singleton → 1.0 (cohesion estimation tracked separately)
-      agreement,
-    },
-    profile,
-  );
+  const confidenceInputs = {
+    corroboration,
+    tierConf,
+    cohesion: 1.0, // stub: singleton → 1.0 (cohesion estimation tracked separately)
+    agreement,
+  };
+  const confidence = computeConfidence(confidenceInputs, profile);
   const gate = confidenceStatus(confidence, profile);
+
+  // -- Fact-level corroboration (Rev 3) --
+  const factCorroboration = clusterFacts ? factCorroborationSignal(clusterFacts) : 0;
+
+  // -- Rev 3: build references + sourceDocIds for downstream stages --
+  const references = buildReferences(members);
+  const memberDomains = new Set(members.map((m) => m.sourceDomain.toLowerCase()));
+  const sourceDocIds = clusterDocuments ? buildSourceDocIds(clusterDocuments, memberDomains) : undefined;
 
   // -- Audit --
   const auditEntry = buildAuditEntry({
@@ -201,10 +221,12 @@ function scoreCluster(
     topic: cluster.topic,
     rating,
     confidence,
+    confidenceInputs,
     gate,
     independentOwners,
     halfLifeHours,
     ageHours,
+    factCorroboration,
     weightProfile: profile.id,
     rankedAt: now,
   });
@@ -236,9 +258,32 @@ function scoreCluster(
     earliestPublishedAt: cluster.earliestPublishedAt,
     latestPublishedAt: cluster.latestPublishedAt,
     auditId: auditEntry.auditId,
+    // Rev 3 fields
+    gateStatus: gate,
+    ...(references.length > 0 && { references }),
+    ...(sourceDocIds && sourceDocIds.length > 0 && { sourceDocIds }),
   };
 
   return { rankedCluster, tieKeys, auditEntry };
+}
+
+/** Build uncapped SourceRef list from cluster members (Rev 3 §6.1b). */
+function buildReferences(members: AggregatedItem[]): SourceRef[] {
+  return members.map((m): SourceRef => ({
+    source: m.source,
+    sourceDomain: m.sourceDomain,
+    tier: m.tier,
+    url: m.url,
+    title: m.title,
+    publishedAt: m.publishedAt,
+  }));
+}
+
+/** Collect SourceDocument IDs that cover this cluster's member domains. */
+function buildSourceDocIds(documents: SourceDocument[], memberDomains: Set<string>): string[] {
+  return documents
+    .filter((d) => memberDomains.has(d.sourceDomain.toLowerCase()))
+    .map((d) => d.id);
 }
 
 /** Zero-score ranked cluster emitted when scoring fails (total-function guarantee). */
@@ -309,6 +354,10 @@ export function runRanking(
   const now = options.now ?? new Date();
   const warnings: string[] = [...aggregation.warnings];
 
+  // Rev 3: passthrough collections (may be absent on older aggregator output).
+  const factsByCluster = aggregation.data.factsByCluster;
+  const documentsByTopic = aggregation.data.documentsByTopic;
+
   const rankedByTopic: Record<string, RankedCluster[]> = {};
   const audit: AuditEntry[] = [];
 
@@ -317,12 +366,14 @@ export function runRanking(
   )) {
     const items = aggregation.data.itemsByTopic?.[topicKey] ?? [];
     const itemsById = new Map(items.map((item) => [item.id, item]));
+    const topicDocuments = documentsByTopic?.[topicKey];
 
     const scored: Array<{ rankedCluster: RankedCluster; tieKeys: TieBreakKeys; auditEntry: AuditEntry | null }> = [];
 
     for (const cluster of clusters) {
       try {
-        const entry = scoreCluster(cluster, itemsById, profile, now);
+        const clusterFacts = factsByCluster?.[cluster.clusterId];
+        const entry = scoreCluster(cluster, itemsById, profile, now, clusterFacts, topicDocuments);
         scored.push({ ...entry, auditEntry: entry.auditEntry });
       } catch (err) {
         warnings.push(
@@ -351,8 +402,23 @@ export function runRanking(
     rankedByTopic[topicKey] = topicRanked;
   }
 
+  // Rev 3: carry factsByCluster + documentsByTopic through so downstream
+  // stages (top-10, synthesizer) can access them without re-reading the
+  // full aggregation artifact.
+  const data: RankingData & {
+    factsByCluster?: typeof factsByCluster;
+    documentsByTopic?: typeof documentsByTopic;
+  } = {
+    rankedByTopic,
+    audit,
+    weightProfile: profile.id,
+    ...(factsByCluster !== undefined && { factsByCluster }),
+    ...(documentsByTopic !== undefined && { documentsByTopic }),
+  };
+
   return {
     schemaVersion: SCHEMA_VERSION,
+    contractRevision: CONTRACT_REVISION,
     artifact: 'ranking',
     runId: generateRunId(aggregation.cycle.id, now),
     upstreamRunId: aggregation.runId,
@@ -360,6 +426,6 @@ export function runRanking(
     cycle: aggregation.cycle,
     topics: aggregation.topics,
     warnings,
-    data: { rankedByTopic, audit, weightProfile: profile.id },
+    data: data as RankingData,
   };
 }

@@ -12,6 +12,7 @@ import type {
   AggregatedItem,
   Cluster,
   CycleMeta,
+  ExtractedFact,
   TopicMeta,
 } from './contracts.ts';
 import { SCHEMA_VERSION } from './contracts.ts';
@@ -29,8 +30,10 @@ import {
   platformVelocities,
   hasTier1Primary,
   maxTierValue,
+  factCorroborationSignal,
+  corroborationSignal,
 } from './signals.ts';
-import { computeScore, computeConfidence, toConfidenceLabel } from './score.ts';
+import { computeScore, computeConfidence, toConfidenceLabel, toScoreBreakdown } from './score.ts';
 import { buildAuditEntry } from './audit.ts';
 import { runRanking } from './index.ts';
 
@@ -642,4 +645,228 @@ test('confidence: all-perfect inputs → 1.0; all-zero → 0', () => {
   const zero = computeConfidence({ corroboration: 0, tierConf: 0, cohesion: 0, agreement: 0 }, P);
   assert.equal(zero, 0);
   assert.equal(toConfidenceLabel(zero, P), 'low');
+});
+
+// ---------------------------------------------------------------------------
+// Rev 3: ScoreBreakdown.technicalSignificance (closes #6/#9)
+// ---------------------------------------------------------------------------
+
+test('toScoreBreakdown: technicalSignificance is emitted as a typed field (Rev 3)', () => {
+  const rating = computeScore(
+    { corroboration: 0.5, technicalSignificance: 0.8, sourceTier: 0.7, engagement: 0.3 },
+    { recency: 0.9, diversity: 1.0 },
+    P,
+  );
+  const breakdown = toScoreBreakdown(rating);
+  assert.equal(breakdown.technicalSignificance, 0.8);
+  assert.ok('technicalSignificance' in breakdown);
+});
+
+// ---------------------------------------------------------------------------
+// Rev 3: Fact-level corroboration signal (R1 / #11)
+// ---------------------------------------------------------------------------
+
+function makeFact(overrides: Partial<ExtractedFact> & Pick<ExtractedFact, 'id' | 'clusterId'>): ExtractedFact {
+  return {
+    topic: 'kubernetes',
+    statement: 'Test fact',
+    entities: [],
+    provenance: [{ sourceDocId: 'doc-1', sourceDomain: 'kubernetes.io', url: 'https://kubernetes.io' }],
+    corroboration: 0,
+    confidence: 'medium',
+    extractedBy: { provider: 'deterministic', model: 'rule-based', status: 'generated', generatedAt: NOW.toISOString() },
+    ...overrides,
+  };
+}
+
+test('factCorroborationSignal: empty facts → 0; all-zero corroboration → 0; high corroboration → value', () => {
+  assert.equal(factCorroborationSignal([]), 0);
+
+  const zeroFacts: ExtractedFact[] = [
+    makeFact({ id: 'f1', clusterId: 'c-1', corroboration: 0 }),
+    makeFact({ id: 'f2', clusterId: 'c-1', corroboration: 0 }),
+  ];
+  assert.equal(factCorroborationSignal(zeroFacts), 0);
+
+  const highFacts: ExtractedFact[] = [
+    makeFact({ id: 'f3', clusterId: 'c-1', corroboration: 0.8 }),
+    makeFact({ id: 'f4', clusterId: 'c-1', corroboration: 0.6 }),
+  ];
+  approx(factCorroborationSignal(highFacts), 0.7); // mean of 0.8 + 0.6
+});
+
+test('corroborationSignal: fact-corroborated cluster beats equal-domain cluster with no facts', () => {
+  const cluster = makeCluster({ clusterId: 'c-fact', distinctDomains: 2, tierHistogram: { 'technical-news': 2 } });
+  const items: AggregatedItem[] = [
+    makeItem({ id: 'i1', clusterId: 'c-fact', sourceDomain: 'blog1.io', tier: 'technical-news' }),
+    makeItem({ id: 'i2', clusterId: 'c-fact', sourceDomain: 'blog2.io', tier: 'technical-news' }),
+  ];
+
+  // Without facts: domain-based corroboration (2 owners)
+  const noFacts = corroborationSignal({ cluster, members: items, now: NOW, profile: P });
+
+  // With corroborated facts: should score ≥ domain-based
+  const facts: ExtractedFact[] = [
+    makeFact({ id: 'f1', clusterId: 'c-fact', corroboration: 0.9 }),
+    makeFact({ id: 'f2', clusterId: 'c-fact', corroboration: 0.8 }),
+  ];
+  const withFacts = corroborationSignal({ cluster, members: items, now: NOW, profile: P, facts });
+
+  assert.ok(withFacts >= noFacts, `fact-corroborated ${withFacts} should be ≥ domain-only ${noFacts}`);
+});
+
+test('runRanking: fact-corroborated cluster beats equal-domain no-facts cluster (R1 acceptance)', () => {
+  const clusterWithFacts = makeCluster({
+    clusterId: 'c-facts',
+    headline: 'Feature release with corroborated facts',
+    memberIds: ['i-f1', 'i-f2'],
+    sourceCount: 2,
+    distinctDomains: 2,
+    tierHistogram: { 'technical-news': 2 },
+  });
+  const clusterNoFacts = makeCluster({
+    clusterId: 'c-nofacts',
+    headline: 'Feature release no facts',
+    memberIds: ['i-n1', 'i-n2'],
+    sourceCount: 2,
+    distinctDomains: 2,
+    tierHistogram: { 'technical-news': 2 },
+  });
+
+  const items: AggregatedItem[] = [
+    makeItem({ id: 'i-f1', clusterId: 'c-facts', sourceDomain: 'site1.io', tier: 'technical-news' }),
+    makeItem({ id: 'i-f2', clusterId: 'c-facts', sourceDomain: 'site2.io', tier: 'technical-news' }),
+    makeItem({ id: 'i-n1', clusterId: 'c-nofacts', sourceDomain: 'site3.io', tier: 'technical-news' }),
+    makeItem({ id: 'i-n2', clusterId: 'c-nofacts', sourceDomain: 'site4.io', tier: 'technical-news' }),
+  ];
+
+  // High-corroboration facts for c-facts only
+  const factsWithCorroboration: ExtractedFact[] = [
+    makeFact({ id: 'ff1', clusterId: 'c-facts', corroboration: 0.9 }),
+    makeFact({ id: 'ff2', clusterId: 'c-facts', corroboration: 0.85 }),
+  ];
+
+  const artifact = makeArtifact(
+    { kubernetes: [clusterNoFacts, clusterWithFacts] }, // no-facts listed first
+    { kubernetes: items },
+  );
+  // Inject fact data
+  artifact.data.factsByCluster = { 'c-facts': factsWithCorroboration };
+
+  const result = runRanking(artifact, { now: NOW });
+  const ranked = result.data.rankedByTopic['kubernetes']!;
+  assert.equal(ranked.length, 2);
+  assert.equal(ranked[0]!.clusterId, 'c-facts', 'fact-corroborated cluster should rank first');
+});
+
+// ---------------------------------------------------------------------------
+// Rev 3: RankedCluster.references, gateStatus, sourceDocIds (#11)
+// ---------------------------------------------------------------------------
+
+test('runRanking: RankedCluster.references is populated from member items', () => {
+  const item = makeItem({
+    id: 'r-1',
+    clusterId: 'c-ref',
+    tier: 'primary',
+    sourceDomain: 'kubernetes.io',
+    source: 'Kubernetes',
+    title: 'Kubernetes v2.0 stable',
+  });
+  const cluster = makeCluster({
+    clusterId: 'c-ref',
+    memberIds: ['r-1'],
+    tierHistogram: { primary: 1 },
+  });
+
+  const result = runRanking(makeArtifact({ kubernetes: [cluster] }, { kubernetes: [item] }), { now: NOW });
+  const c = result.data.rankedByTopic['kubernetes']?.[0]!;
+
+  assert.ok(Array.isArray(c.references), 'references should be an array');
+  assert.equal(c.references!.length, 1);
+  assert.equal(c.references![0]!.sourceDomain, 'kubernetes.io');
+  assert.equal(c.references![0]!.title, 'Kubernetes v2.0 stable');
+  assert.equal(c.references![0]!.tier, 'primary');
+});
+
+test('runRanking: RankedCluster.gateStatus is set from editorial gate', () => {
+  // High-confidence cluster → auto gate
+  const t1Item = makeItem({ id: 'g-1', clusterId: 'c-gate', tier: 'primary', sourceDomain: 'kubernetes.io' });
+  const t2Item = makeItem({ id: 'g-2', clusterId: 'c-gate', tier: 'technical-news', sourceDomain: 'thenewstack.io' });
+  const cluster = makeCluster({
+    clusterId: 'c-gate',
+    memberIds: ['g-1', 'g-2'],
+    distinctDomains: 2,
+    tierHistogram: { primary: 1, 'technical-news': 1 },
+    headline: 'Kubernetes v1.30 generally available — major release',
+  });
+
+  const result = runRanking(
+    makeArtifact({ kubernetes: [cluster] }, { kubernetes: [t1Item, t2Item] }),
+    { now: NOW },
+  );
+  const c = result.data.rankedByTopic['kubernetes']?.[0]!;
+  assert.ok(
+    c.gateStatus === 'auto' || c.gateStatus === 'flagged' || c.gateStatus === 'hold',
+    `gateStatus should be one of auto/flagged/hold, got ${String(c.gateStatus)}`,
+  );
+});
+
+test('runRanking: factsByCluster passed through in output data', () => {
+  const cluster = makeCluster({ clusterId: 'c-pt', memberIds: [] });
+  const facts: ExtractedFact[] = [makeFact({ id: 'pt1', clusterId: 'c-pt', corroboration: 0.5 })];
+
+  const artifact = makeArtifact({ kubernetes: [cluster] });
+  artifact.data.factsByCluster = { 'c-pt': facts };
+
+  const result = runRanking(artifact, { now: NOW });
+  // factsByCluster is passed through as an additive field on the data object
+  const data = result.data as typeof result.data & { factsByCluster?: typeof artifact.data.factsByCluster };
+  assert.ok(data.factsByCluster !== undefined, 'factsByCluster should be passed through');
+  assert.equal(data.factsByCluster!['c-pt']!.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// ENGINE-007 / #5: Confidence calibration — components in audit trail
+// ---------------------------------------------------------------------------
+
+test('audit entry: confidence calibration inputs are recorded (ENGINE-007 #5)', () => {
+  const item = makeItem({ id: 'ca-1', clusterId: 'c-cal', tier: 'primary', sourceDomain: 'kubernetes.io' });
+  const cluster = makeCluster({
+    clusterId: 'c-cal',
+    memberIds: ['ca-1'],
+    distinctDomains: 1,
+    tierHistogram: { primary: 1 },
+    headline: 'Kubernetes security patch v1.30.5',
+  });
+
+  const result = runRanking(
+    makeArtifact({ kubernetes: [cluster] }, { kubernetes: [item] }),
+    { now: NOW },
+  );
+
+  assert.equal(result.data.audit.length, 1);
+  const entry = result.data.audit[0]!;
+
+  // Confidence value
+  assert.ok('confidence' in entry.inputs, 'confidence value must be in audit inputs');
+
+  // All four calibration components must be present (ENGINE-007 #5)
+  assert.ok('conf_corroboration' in entry.inputs, 'conf_corroboration missing from audit inputs');
+  assert.ok('conf_tierConf' in entry.inputs, 'conf_tierConf missing from audit inputs');
+  assert.ok('conf_cohesion' in entry.inputs, 'conf_cohesion missing from audit inputs');
+  assert.ok('conf_agreement' in entry.inputs, 'conf_agreement missing from audit inputs');
+
+  // Values are in [0, 1]
+  for (const key of ['conf_corroboration', 'conf_tierConf', 'conf_cohesion', 'conf_agreement'] as const) {
+    const v = entry.inputs[key] ?? -1;
+    assert.ok(v >= 0 && v <= 1, `${key} = ${v} out of [0,1]`);
+  }
+
+  // factCorroboration is recorded (0 when no facts available)
+  assert.ok('factCorroboration' in entry.inputs, 'factCorroboration missing from audit inputs');
+});
+
+test('contractRevision is stamped on ranking artifact', () => {
+  const result = runRanking(makeArtifact({}), { now: NOW });
+  assert.equal(result.contractRevision, 3);
 });

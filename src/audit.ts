@@ -13,7 +13,7 @@
  */
 
 import type { AuditEntry } from './contracts.ts';
-import type { RatingBreakdown, GateStatus } from './score.ts';
+import type { RatingBreakdown, ConfidenceInputs, GateStatus } from './score.ts';
 import { toScoreBreakdown } from './score.ts';
 
 export interface AuditInput {
@@ -23,11 +23,23 @@ export interface AuditInput {
   rating: RatingBreakdown;
   /** Confidence value (§2.7) and the editorial gate it falls into. */
   confidence: number;
+  /**
+   * ENGINE-007 (#5): the four inputs that produced `confidence`.
+   * Recorded so calibration can be validated offline: check whether clusters
+   * that scored 'high' actually held up multi-source over time.
+   *
+   * Static calibration (balanced@v1): wC=0.35, wTier=0.30, wCohesion=0.20, wAgreement=0.15.
+   * Dynamic recalibration (future): compare realized corroboration against predicted
+   * confidence buckets once a rolling history is available.
+   */
+  confidenceInputs: ConfidenceInputs;
   gate: GateStatus;
   /** Inputs to the recency multiplier, for full reproducibility. */
   independentOwners: number;
   halfLifeHours: number;
   ageHours: number;
+  /** Rev 3: fact-level corroboration signal (0 when no facts available). */
+  factCorroboration: number;
   weightProfile: string;
   rankedAt: Date;
 }
@@ -52,11 +64,13 @@ export function auditIdFor(input: AuditInput): string {
 export function buildAuditEntry(input: AuditInput): AuditEntry {
   const { rating } = input;
   const inputs: Record<string, number> = {
-    // Core signals (C, T, S, E) — the lossless model record, incl. T.
+    // Core signals (C, T, S, E).
     corroboration: rating.signals.corroboration,
     technicalSignificance: rating.signals.technicalSignificance,
     sourceTier: rating.signals.sourceTier,
     engagement: rating.signals.engagement,
+    // Rev 3: fact-level corroboration (0 when no facts available).
+    factCorroboration: input.factCorroboration,
     // Combination.
     weightedCore: rating.weightedCore,
     recencyMultiplier: rating.recency,
@@ -66,8 +80,12 @@ export function buildAuditEntry(input: AuditInput): AuditEntry {
     independentOwners: input.independentOwners,
     halfLifeHours: input.halfLifeHours,
     ageHours: input.ageHours,
-    // Confidence.
+    // Confidence (ENGINE-007 #5): value + the four calibration inputs.
     confidence: input.confidence,
+    conf_corroboration: input.confidenceInputs.corroboration,
+    conf_tierConf: input.confidenceInputs.tierConf,
+    conf_cohesion: input.confidenceInputs.cohesion,
+    conf_agreement: input.confidenceInputs.agreement,
   };
   return {
     auditId: auditIdFor(input),

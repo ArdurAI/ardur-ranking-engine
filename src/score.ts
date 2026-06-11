@@ -12,13 +12,8 @@
  * are PURE and implemented here. Provenance labels are derived from the
  * cluster's tier histogram. (Cohesion/agreement extraction lives upstream.)
  *
- * CONTRACT NOTE: the shared `ScoreBreakdown` predates this model and has no slot
- * for the Technical-significance *component value* (it carries the four other
- * components + `total` + a free-form `weights` record). `toScoreBreakdown()`
- * therefore records all four core weights in `weights` but can only surface
- * C/S/E + the recency/diversity multipliers as typed components; the full,
- * lossless breakdown (including T) is preserved in the audit entry's `inputs`.
- * Tracked for a contract revision — do NOT edit the shared file here.
+ * Rev 3: `ScoreBreakdown.technicalSignificance` is now a typed field; `toScoreBreakdown()`
+ * is fully lossless — no CONTRACT NOTE workaround needed.
  */
 
 import type {
@@ -194,18 +189,18 @@ export function compareForRank(a: TieBreakKeys, b: TieBreakKeys, profile: Weight
 // ---------------------------------------------------------------------------
 
 /**
- * Project a `RatingBreakdown` onto the shared `ScoreBreakdown`. The four core
- * weights are recorded in `weights`; the Technical-significance *value* has no
- * typed slot and lives only in the audit `inputs` until the contract is revised.
+ * Project a `RatingBreakdown` onto the shared `ScoreBreakdown`.
+ * Rev 3: `technicalSignificance` is a typed field — the mapping is now lossless.
  */
 export function toScoreBreakdown(rating: RatingBreakdown): ScoreBreakdown {
   return {
     corroboration: rating.signals.corroboration,
     credibility: rating.signals.sourceTier, // S = source-tier credibility
     interaction: rating.signals.engagement, // E = engagement / attention
+    technicalSignificance: rating.signals.technicalSignificance, // Rev 3: typed slot
     recency: rating.recency,
     diversity: rating.diversity,
     total: rating.total,
-    weights: { ...rating.weights }, // includes technicalSignificance weight
+    weights: { ...rating.weights },
   };
 }

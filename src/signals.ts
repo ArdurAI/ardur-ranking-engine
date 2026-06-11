@@ -18,12 +18,14 @@
  *   Diversity  = clamp(0.8 + 0.35·div, 0.8, 1.15)
  */
 
-import type { Cluster, AggregatedItem, SourceTier } from './contracts.ts';
+import type { Cluster, AggregatedItem, ExtractedFact, SourceTier } from './contracts.ts';
 import type { WeightProfile, CredibilityTier } from './weights.ts';
 
 export interface SignalInputs {
   cluster: Cluster;
   members: AggregatedItem[]; // resolved cluster members
+  /** Rev 3: facts extracted by the aggregator for this cluster. */
+  facts?: ExtractedFact[];
   now: Date;
   profile: WeightProfile;
 }
@@ -370,9 +372,41 @@ export function platformVelocities(input: SignalInputs): Record<string, number> 
   return {}; // No engagement data — 0 floor applied by engagementScore.
 }
 
-/** C — corroboration signal (composes owner count + the pure curve). */
+/**
+ * Rev 3: fact-level corroboration signal.
+ *
+ * Uses `ExtractedFact.corroboration` (set by the aggregator) as a direct
+ * measure of how well facts in the cluster hold up across distinct sources.
+ * Returns the mean corroboration value across all facts; 0 when no facts.
+ *
+ * A cluster whose facts corroborate across ≥2 distinct source domains will
+ * have a higher mean `fact.corroboration` than one with no fact evidence,
+ * even when both have the same headline domain-count.
+ */
+export function factCorroborationSignal(facts: ExtractedFact[]): number {
+  if (facts.length === 0) return 0;
+  let sum = 0;
+  for (const f of facts) {
+    sum += f.corroboration;
+  }
+  return Math.min(1, sum / facts.length);
+}
+
+/**
+ * C — corroboration signal.
+ *
+ * When Rev 3 facts are available, blends the domain-based estimate with the
+ * fact-level signal: `max(domainBased, factLevel)`.  This guarantees a cluster
+ * with corroborated facts always ranks ≥ an equal-domain cluster with no
+ * agreeing facts — satisfying the R1 acceptance criterion — without ever
+ * penalising a cluster that lacks extracted facts.
+ */
 export function corroborationSignal(input: SignalInputs): number {
-  return corroborationScore(countIndependentOwners(input), input.profile);
+  const domainBased = corroborationScore(countIndependentOwners(input), input.profile);
+  const { facts } = input;
+  if (!facts || facts.length === 0) return domainBased;
+  const factLevel = factCorroborationSignal(facts);
+  return Math.max(domainBased, factLevel);
 }
 
 /** E — engagement signal (composes velocities + caps). */
