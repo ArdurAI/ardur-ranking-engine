@@ -8,10 +8,10 @@
 
 Implements the finalized Ardur topic-rating model (design:
 `~/Documents/Ardur-AI-Website/news-rating-system.md`, mirrored in
-[`docs/spec.md`](./docs/spec.md)). The model's **math is implemented and
-unit-tested**; the data-extraction layer (owner-independence dedup, CVE/semver
-parsing, engagement baselines) and per-artifact orchestration remain scaffold
-stubs, tracked as issues.
+[`docs/spec.md`](./docs/spec.md)). The **full scoring engine is implemented** —
+all four signal extractors, recency decay, diversity, confidence gating,
+tie-breaking, audit trail, and `runRanking()` orchestration. Deterministic, no
+paid-API dependency, 41 tests green.
 
 ## The model
 
@@ -95,6 +95,7 @@ flowchart LR
 | `src/index.ts` | `runRanking()` entrypoint + public surface. |
 | `src/cli.ts` | Rank an artifact from stdin/file. |
 | `src/model.test.ts` | Conformance tests against the spec's worked values. |
+| `src/ranking.test.ts` | Integration + boundary tests for signal extractors and `runRanking`. |
 
 ## Getting started
 
