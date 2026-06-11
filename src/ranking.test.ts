@@ -444,9 +444,13 @@ test('runRanking: very old cluster has near-zero recency', () => {
 });
 
 test('runRanking: multi-source T1+T2 cluster has auto confidence', () => {
-  const t1 = makeItem({ id: 'm1', clusterId: 'c-conf', tier: 'primary', sourceDomain: 'kubernetes.io' });
-  const t2a = makeItem({ id: 'm2', clusterId: 'c-conf', tier: 'technical-news', sourceDomain: 'thenewstack.io' });
-  const t2b = makeItem({ id: 'm3', clusterId: 'c-conf', tier: 'news', sourceDomain: 'reuters.com' });
+  // Titles must share tokens with the headline so cohesion is non-zero (#17).
+  const t1 = makeItem({ id: 'm1', clusterId: 'c-conf', tier: 'primary', sourceDomain: 'kubernetes.io',
+    title: 'Kubernetes release notes general availability' });
+  const t2a = makeItem({ id: 'm2', clusterId: 'c-conf', tier: 'technical-news', sourceDomain: 'thenewstack.io',
+    title: 'Kubernetes major release generally available today' });
+  const t2b = makeItem({ id: 'm3', clusterId: 'c-conf', tier: 'news', sourceDomain: 'reuters.com',
+    title: 'Major Kubernetes release available for production' });
 
   const cluster = makeCluster({
     clusterId: 'c-conf',
@@ -679,20 +683,29 @@ function makeFact(overrides: Partial<ExtractedFact> & Pick<ExtractedFact, 'id' |
   };
 }
 
-test('factCorroborationSignal: empty facts → 0; all-zero corroboration → 0; high corroboration → value', () => {
-  assert.equal(factCorroborationSignal([]), 0);
+test('factCorroborationSignal: empty facts → 0; single-owner (n=1) cannot reach 1.0; multi-owner is graded', () => {
+  // Empty → 0
+  assert.equal(factCorroborationSignal([], P), 0);
 
-  const zeroFacts: ExtractedFact[] = [
-    makeFact({ id: 'f1', clusterId: 'c-1', corroboration: 0 }),
-    makeFact({ id: 'f2', clusterId: 'c-1', corroboration: 0 }),
+  // Single-owner facts (corroboration=1): must NOT produce 1.0 (#15/#18).
+  const singleOwnerFacts: ExtractedFact[] = [
+    makeFact({ id: 'f1', clusterId: 'c-1', corroboration: 1 }),
+    makeFact({ id: 'f2', clusterId: 'c-1', corroboration: 1 }),
   ];
-  assert.equal(factCorroborationSignal(zeroFacts), 0);
+  const singleSignal = factCorroborationSignal(singleOwnerFacts, P);
+  assert.ok(singleSignal < 1.0, `single-owner must not reach 1.0, got ${singleSignal}`);
+  assert.ok(singleSignal > 0, `single-owner should produce a positive signal, got ${singleSignal}`);
 
+  // Multi-owner facts (corroboration=4 > corroboration=2): graded via saturation curve.
   const highFacts: ExtractedFact[] = [
-    makeFact({ id: 'f3', clusterId: 'c-1', corroboration: 0.8 }),
-    makeFact({ id: 'f4', clusterId: 'c-1', corroboration: 0.6 }),
+    makeFact({ id: 'f3', clusterId: 'c-1', corroboration: 4 }),
+    makeFact({ id: 'f4', clusterId: 'c-1', corroboration: 2 }),
   ];
-  approx(factCorroborationSignal(highFacts), 0.7); // mean of 0.8 + 0.6
+  const highSignal = factCorroborationSignal(highFacts, P);
+  // corroborationScore(4,P)=ln5/ln9≈0.732, corroborationScore(2,P)=ln3/ln9≈0.5 → mean≈0.616
+  approx(highSignal, 0.616);
+  // Multi-owner must exceed single-owner signal.
+  assert.ok(highSignal > singleSignal, `multi-owner (${highSignal}) should exceed single-owner (${singleSignal})`);
 });
 
 test('corroborationSignal: fact-corroborated cluster beats equal-domain cluster with no facts', () => {
@@ -705,10 +718,12 @@ test('corroborationSignal: fact-corroborated cluster beats equal-domain cluster 
   // Without facts: domain-based corroboration (2 owners)
   const noFacts = corroborationSignal({ cluster, members: items, now: NOW, profile: P });
 
-  // With corroborated facts: should score ≥ domain-based
+  // With corroborated facts: should score ≥ domain-based.
+  // Use integer corroboration counts (the correct type per the contracts schema).
+  // n=4 → corroborationScore(4,P)≈0.732 > corroborationScore(2,P)≈0.5 (domain-based).
   const facts: ExtractedFact[] = [
-    makeFact({ id: 'f1', clusterId: 'c-fact', corroboration: 0.9 }),
-    makeFact({ id: 'f2', clusterId: 'c-fact', corroboration: 0.8 }),
+    makeFact({ id: 'f1', clusterId: 'c-fact', corroboration: 4 }),
+    makeFact({ id: 'f2', clusterId: 'c-fact', corroboration: 4 }),
   ];
   const withFacts = corroborationSignal({ cluster, members: items, now: NOW, profile: P, facts });
 
@@ -740,10 +755,11 @@ test('runRanking: fact-corroborated cluster beats equal-domain no-facts cluster 
     makeItem({ id: 'i-n2', clusterId: 'c-nofacts', sourceDomain: 'site4.io', tier: 'technical-news' }),
   ];
 
-  // High-corroboration facts for c-facts only
+  // High-corroboration facts for c-facts only.
+  // n=5 → corroborationScore(5,P)≈0.794 > corroborationScore(2,P)≈0.5 (2-domain baseline).
   const factsWithCorroboration: ExtractedFact[] = [
-    makeFact({ id: 'ff1', clusterId: 'c-facts', corroboration: 0.9 }),
-    makeFact({ id: 'ff2', clusterId: 'c-facts', corroboration: 0.85 }),
+    makeFact({ id: 'ff1', clusterId: 'c-facts', corroboration: 5 }),
+    makeFact({ id: 'ff2', clusterId: 'c-facts', corroboration: 5 }),
   ];
 
   const artifact = makeArtifact(

@@ -241,12 +241,34 @@ const VELOCITY_BASELINE_PER_HOUR = 5.0;
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalize a raw sourceDomain string for owner-dedup (CWE-20 defence).
+ *
+ * Strips userinfo (`user@`), port (`:8080`), and the `www.` prefix, then
+ * lowercases.  Two URLs that differ only in these inert components (e.g.
+ * "WWW.Example.com", "example.com:443", "cdn@example.com") collapse to the
+ * same key so they aren't counted as separate independent owners.
+ */
+export function normalizeOwnerDomain(domain: string): string {
+  let d = domain.toLowerCase().trim();
+  // Strip userinfo (e.g. "cdn@example.com" → "example.com")
+  const atIdx = d.lastIndexOf('@');
+  if (atIdx >= 0) d = d.slice(atIdx + 1);
+  // Strip port (e.g. "example.com:8080" → "example.com")
+  const portIdx = d.lastIndexOf(':');
+  if (portIdx >= 0) d = d.slice(0, portIdx);
+  // Strip www. prefix (e.g. "www.example.com" → "example.com")
+  if (d.startsWith('www.')) d = d.slice(4);
+  return d;
+}
+
+/**
  * n — count of distinct independent OWNERS for a cluster.
  *
- * Deduplicates members by `sourceDomain` (lowercase), counting only those at
- * credibility tier ≥ `profile.corroborationMinTier` (default T3).  This is a
- * domain-level proxy for the full ownership registry; syndicated copies of the
- * same publisher collapse to one domain entry.
+ * Deduplicates members by normalized `sourceDomain` (strip userinfo/port/www,
+ * then lowercase — CWE-20), counting only those at credibility tier ≥
+ * `profile.corroborationMinTier` (default T3).  This is a domain-level proxy
+ * for the full ownership registry; syndicated copies of the same publisher
+ * collapse to one domain entry.
  *
  * Falls back to `cluster.distinctDomains` when no members are available.
  */
@@ -259,7 +281,7 @@ export function countIndependentOwners(input: SignalInputs): number {
   const ownerDomains = new Set<string>();
   for (const m of members) {
     if (tierValue(m.tier, profile) >= minValue) {
-      ownerDomains.add(m.sourceDomain.toLowerCase());
+      ownerDomains.add(normalizeOwnerDomain(m.sourceDomain));
     }
   }
   return ownerDomains.size;
@@ -306,11 +328,11 @@ export function ownerDiversity(input: SignalInputs): number {
     return n <= 1 ? 0 : Math.min(1, (n - 1) / 7);
   }
 
-  // Count items per domain and collect categories.
+  // Count items per normalized domain and collect categories (#16: strip userinfo/port/www).
   const domainCounts = new Map<string, number>();
   const categories = new Set<SourceCategory>();
   for (const m of members) {
-    const domain = m.sourceDomain.toLowerCase();
+    const domain = normalizeOwnerDomain(m.sourceDomain);
     domainCounts.set(domain, (domainCounts.get(domain) ?? 0) + 1);
     categories.add(sourceCategory(m.tier));
   }
@@ -375,21 +397,28 @@ export function platformVelocities(input: SignalInputs): Record<string, number> 
 /**
  * Rev 3: fact-level corroboration signal.
  *
- * Uses `ExtractedFact.corroboration` (set by the aggregator) as a direct
- * measure of how well facts in the cluster hold up across distinct sources.
- * Returns the mean corroboration value across all facts; 0 when no facts.
+ * `ExtractedFact.corroboration` is an INTEGER COUNT of distinct source owners
+ * that agree on the fact (set by the aggregator, min 1 = single owner).  This
+ * function applies the same log-saturation curve as `corroborationScore` to
+ * each fact, then returns the mean — so a single owner NEVER saturates to 1.0
+ * (#15/#18), and NaN/Infinity/negative values are sanitized to 0 (#13).
  *
- * A cluster whose facts corroborate across ≥2 distinct source domains will
- * have a higher mean `fact.corroboration` than one with no fact evidence,
- * even when both have the same headline domain-count.
+ * Without profile-aware saturation, a cluster where every fact has
+ * corroboration=1 (one-owner) would produce factLevel=1.0, collapsing all
+ * such clusters to C=1.0 and erasing T-signal ordering for security topics.
  */
-export function factCorroborationSignal(facts: ExtractedFact[]): number {
+export function factCorroborationSignal(facts: ExtractedFact[], profile: WeightProfile): number {
   if (facts.length === 0) return 0;
   let sum = 0;
   for (const f of facts) {
-    sum += f.corroboration;
+    // #13: sanitize — NaN / Infinity / negative values must never reach the scorer.
+    const raw = f.corroboration;
+    const n = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+    // #15/#18: apply log-saturation so a single owner (n=1) never reaches 1.0.
+    sum += corroborationScore(n, profile);
   }
-  return Math.min(1, sum / facts.length);
+  // Mean is already in [0, 1] because corroborationScore is clamped to [0, 1].
+  return sum / facts.length;
 }
 
 /**
@@ -405,7 +434,7 @@ export function corroborationSignal(input: SignalInputs): number {
   const domainBased = corroborationScore(countIndependentOwners(input), input.profile);
   const { facts } = input;
   if (!facts || facts.length === 0) return domainBased;
-  const factLevel = factCorroborationSignal(facts);
+  const factLevel = factCorroborationSignal(facts, input.profile);
   return Math.max(domainBased, factLevel);
 }
 

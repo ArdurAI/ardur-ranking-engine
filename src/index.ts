@@ -57,6 +57,7 @@ import {
   computeConfidence,
   confidenceStatus,
   toConfidenceLabel,
+  isEligibleForTop10,
   deriveSourceQuality,
   deriveVerification,
   compareForRank,
@@ -90,6 +91,7 @@ export {
   hasTier1Primary,
   maxTierValue,
   countIndependentOwners,
+  normalizeOwnerDomain,
   technicalSignificanceSignal,
   ownerDiversity,
   platformVelocities,
@@ -141,6 +143,34 @@ export interface RankingOptions {
 /** agreement = low when engagement is high but corroboration is near zero. */
 function agreementScore(corroboration: number, engagement: number): number {
   return 1 - Math.max(0, engagement - corroboration);
+}
+
+/**
+ * Cohesion — mean intra-cluster similarity to the cluster headline.
+ *
+ * Tokenizes each member's title + summaryHint and measures what fraction of
+ * the headline's tokens appear in the member text (Jaccard-lite overlap).
+ * Singletons always return 1.0 (by definition a single source is internally
+ * consistent).  Deterministic; no external dependencies.
+ */
+function computeCohesion(cluster: Cluster, members: AggregatedItem[]): number {
+  if (members.length <= 1) return 1.0;
+  const headlineWords = new Set(tokenizeText(cluster.headline));
+  if (headlineWords.size === 0) return 1.0;
+  let sumSim = 0;
+  for (const m of members) {
+    const memberWords = new Set(tokenizeText(`${m.title} ${m.summaryHint ?? ''}`));
+    let overlap = 0;
+    for (const w of headlineWords) {
+      if (memberWords.has(w)) overlap++;
+    }
+    sumSim += overlap / headlineWords.size;
+  }
+  return Math.min(1, sumSim / members.length);
+}
+
+function tokenizeText(text: string): string[] {
+  return text.toLowerCase().match(/\b[a-z]{3,}\b/g) ?? [];
 }
 
 /** Deterministic run ID for a ranking stage execution. */
@@ -200,17 +230,27 @@ function scoreCluster(
   const independentOwners = countIndependentOwners(signalInput);
   const agreement = agreementScore(corroboration, engagement);
 
+  // #17: compute real cohesion — mean headline-token overlap across cluster members.
+  const cohesion = computeCohesion(cluster, members);
+
   const confidenceInputs = {
     corroboration,
     tierConf,
-    cohesion: 1.0, // stub: singleton → 1.0 (cohesion estimation tracked separately)
+    cohesion,
     agreement,
   };
   const confidence = computeConfidence(confidenceInputs, profile);
-  const gate = confidenceStatus(confidence, profile);
+  let gate = confidenceStatus(confidence, profile);
+
+  // #14: anti-gaming gate §2.8 — enforce isEligibleForTop10.
+  // A cluster that lacks a T1 primary AND has fewer than minIndependentOwners must
+  // be held regardless of confidence, preventing pure-engagement promotion.
+  if (!isEligibleForTop10({ independentOwners, hasTier1Primary: hasTier1 }, profile)) {
+    gate = 'hold';
+  }
 
   // -- Fact-level corroboration (Rev 3) --
-  const factCorroboration = clusterFacts ? factCorroborationSignal(clusterFacts) : 0;
+  const factCorroboration = clusterFacts ? factCorroborationSignal(clusterFacts, profile) : 0;
 
   // -- Rev 3: build references + sourceDocIds for downstream stages --
   const references = buildReferences(members);
