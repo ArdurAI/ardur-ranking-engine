@@ -11,6 +11,8 @@ import type { AggregatedItem, AggregationArtifact, Cluster, CycleMeta, Extracted
 import { SCHEMA_VERSION } from './contracts.ts';
 import { BALANCED_V1 } from './weights.ts';
 import {
+  NEUTRAL_AGE_HOURS,
+  ageHoursSince,
   corroborationScore,
   factCorroborationSignal,
   corroborationSignal,
@@ -133,19 +135,17 @@ test('#13 factCorroborationSignal: negative corroboration is sanitized to 0', ()
   assert.ok(Number.isFinite(signal) && signal >= 0, `negative corroboration must give ≥ 0, got ${signal}`);
 });
 
-test('#13 runRanking: cluster with NaN fact.corroboration emits finite score.total (not null when serialized)', () => {
+test('#13 runRanking: cluster with NaN fact.corroboration is rejected at validation (not silently scored)', () => {
+  // Since #26 wired validateAggregationArtifact into runRanking, invalid facts now
+  // throw before scoring rather than producing NaN-poisoned output.  The old
+  // assertion (emits finite score.total) is superseded: rejection is the stricter fix.
   const cluster = makeCluster({ clusterId: 'c-nan', memberIds: [] });
   const artifact = makeArtifact({ kubernetes: [cluster] });
   artifact.data.factsByCluster = {
     'c-nan': [makeFact({ id: 'bad', clusterId: 'c-nan', corroboration: NaN as unknown as number })],
   };
-  const result = runRanking(artifact, { now: NOW });
-  const c = result.data.rankedByTopic['kubernetes']?.[0]!;
-  assert.ok(Number.isFinite(c.score.total), `score.total must be finite (not null in JSON), got ${c.score.total}`);
-  assert.ok(!Number.isNaN(c.score.total), 'score.total must not be NaN');
-  // Verify JSON serialization does not produce null
-  const json = JSON.parse(JSON.stringify(c.score));
-  assert.ok(json.total !== null, 'score.total must not serialize as null');
+  assert.throws(() => runRanking(artifact, { now: NOW }), /factsByCluster/,
+    '#13+#26: NaN corroboration must be caught by input validation before scoring');
 });
 
 test('#13 validateAggregationArtifact (Zod tier): rejects fact with corroboration=NaN', () => {
@@ -334,9 +334,10 @@ test('#16 normalizeOwnerDomain: strips userinfo', () => {
   assert.equal(normalizeOwnerDomain('user@www.example.com'), 'example.com');
 });
 
-test('#16 normalizeOwnerDomain: lowercases and handles clean domains unchanged', () => {
+test('#16 normalizeOwnerDomain: lowercases and reduces subdomains to eTLD+1', () => {
   assert.equal(normalizeOwnerDomain('Example.com'), 'example.com');
-  assert.equal(normalizeOwnerDomain('sub.example.com'), 'sub.example.com');
+  // #22: subdomains now collapse to registrable domain (eTLD+1)
+  assert.equal(normalizeOwnerDomain('sub.example.com'), 'example.com');
 });
 
 test('#16 countIndependentOwners: www.example.com and example.com are the same owner', () => {
@@ -589,4 +590,108 @@ test('#18 T-signal ordering: graded corroboration values produce graded C scores
   assert.ok(c4 < c8, `C(n=4)=${c4} < C(n=8)=${c8}`);
   approx(c8, 1.0); // saturation at C_sat=8
   assert.ok(c1 < 0.4, `C(n=1)=${c1} must be well below 1.0 (was 1.0 before fix)`);
+});
+
+// ---------------------------------------------------------------------------
+// #22 — eTLD+1 corroboration dedup: subdomains of the same publisher must
+//        collapse to a single owner key.
+// ---------------------------------------------------------------------------
+
+test('#22 normalizeOwnerDomain: subdomains collapse to eTLD+1 (example.com)', () => {
+  assert.equal(normalizeOwnerDomain('news.example.com'), 'example.com');
+  assert.equal(normalizeOwnerDomain('blog.example.com'), 'example.com');
+  assert.equal(normalizeOwnerDomain('example.com'), 'example.com');
+});
+
+test('#22 normalizeOwnerDomain: two-part TLD preserved (bbc.co.uk)', () => {
+  assert.equal(normalizeOwnerDomain('bbc.co.uk'), 'bbc.co.uk');
+  assert.equal(normalizeOwnerDomain('news.bbc.co.uk'), 'bbc.co.uk');
+  assert.equal(normalizeOwnerDomain('www.bbc.co.uk'), 'bbc.co.uk');
+});
+
+test('#22 countIndependentOwners: news.example.com and blog.example.com count as one owner', () => {
+  const cluster = makeCluster({ clusterId: 'c-etld', distinctDomains: 2 });
+  const items: AggregatedItem[] = [
+    makeItem({ id: 'etld1', clusterId: 'c-etld', sourceDomain: 'news.example.com', tier: 'technical-news' }),
+    makeItem({ id: 'etld2', clusterId: 'c-etld', sourceDomain: 'blog.example.com', tier: 'technical-news' }),
+    makeItem({ id: 'etld3', clusterId: 'c-etld', sourceDomain: 'other-site.io', tier: 'technical-news' }),
+  ];
+  const n = countIndependentOwners({ cluster, members: items, now: NOW, profile: P });
+  assert.equal(n, 2, '#22: news.example.com + blog.example.com collapse to one owner; other-site.io is another');
+});
+
+// ---------------------------------------------------------------------------
+// #23 — Invalid/missing latestPublishedAt yields NEUTRAL_AGE_HOURS, not 0.
+//        Prevents articles with missing timestamps from receiving max recency.
+// ---------------------------------------------------------------------------
+
+test('#23 NEUTRAL_AGE_HOURS is exported and equals 24', () => {
+  assert.equal(NEUTRAL_AGE_HOURS, 24);
+});
+
+test('#23 ageHoursSince: undefined timestamp returns NEUTRAL_AGE_HOURS, not 0', () => {
+  assert.equal(ageHoursSince(undefined, NOW), NEUTRAL_AGE_HOURS);
+});
+
+test('#23 ageHoursSince: null timestamp returns NEUTRAL_AGE_HOURS, not 0', () => {
+  assert.equal(ageHoursSince(null, NOW), NEUTRAL_AGE_HOURS);
+});
+
+test('#23 ageHoursSince: invalid ISO string returns NEUTRAL_AGE_HOURS, not 0', () => {
+  assert.equal(ageHoursSince('not-a-date', NOW), NEUTRAL_AGE_HOURS);
+  assert.equal(ageHoursSince('', NOW), NEUTRAL_AGE_HOURS);
+});
+
+test('#23 ageHoursSince: valid timestamp still works correctly', () => {
+  const sixHoursAgo = new Date(NOW.valueOf() - 6 * 3_600_000).toISOString();
+  approx(ageHoursSince(sixHoursAgo, NOW), 6, 0.01);
+});
+
+test('#23 runRanking: cluster with missing latestPublishedAt does not receive max recency (1.0)', () => {
+  // Cluster with an empty/invalid latestPublishedAt — before fix this would give age=0 → recency=1.0
+  const cluster = makeCluster({
+    clusterId: 'c-nodate',
+    latestPublishedAt: '',
+    memberIds: [],
+    tierHistogram: { primary: 1 },
+    distinctDomains: 1,
+  });
+  const artifact = makeArtifact({ kubernetes: [cluster] });
+  const result = runRanking(artifact, { now: NOW });
+  const c = result.data.rankedByTopic['kubernetes']?.[0]!;
+  // With neutral floor (24h) recency should be well below 1.0 (H≈12–36h)
+  assert.ok(c.score.recency < 1.0, `#23: missing timestamp must not give max recency, got ${c.score.recency}`);
+  assert.ok(Number.isFinite(c.score.total), '#23: score.total must be finite even with missing timestamp');
+});
+
+// ---------------------------------------------------------------------------
+// #26 — runRanking() validates input via validateAggregationArtifact.
+//        Invalid artifacts must throw rather than produce NaN-poisoned output.
+// ---------------------------------------------------------------------------
+
+test('#26 runRanking: throws on missing clustersByTopic', () => {
+  const invalid = {
+    schemaVersion: SCHEMA_VERSION,
+    artifact: 'aggregation',
+    runId: 'bad-01',
+    upstreamRunId: null,
+    generatedAt: NOW.toISOString(),
+    cycle: CYCLE,
+    topics: [],
+    warnings: [],
+    data: {
+      itemsByTopic: {},
+      coverageByTopic: {},
+      // clustersByTopic intentionally omitted
+    },
+  };
+  assert.throws(() => runRanking(invalid as unknown as AggregationArtifact, { now: NOW }),
+    /clustersByTopic/,
+    '#26: missing clustersByTopic must throw a clear validation error');
+});
+
+test('#26 runRanking: accepts a well-formed artifact without throwing', () => {
+  const artifact = makeArtifact({ kubernetes: [] });
+  assert.doesNotThrow(() => runRanking(artifact, { now: NOW }),
+    '#26: valid artifact must not throw during validation');
 });

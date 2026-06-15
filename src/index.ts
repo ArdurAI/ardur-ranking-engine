@@ -65,6 +65,7 @@ import {
 } from './score.ts';
 import type { RawSignals, Multipliers, TieBreakKeys } from './score.ts';
 import { buildAuditEntry, stableHashNumber } from './audit.ts';
+import { validateAggregationArtifact } from './validate.ts';
 
 export * from './contracts.ts';
 
@@ -79,6 +80,7 @@ export type { WeightProfile, CoreWeights, CredibilityTier } from './weights.ts';
 
 // Signal transforms (the model's formulas) + extraction.
 export {
+  NEUTRAL_AGE_HOURS,
   corroborationScore,
   sourceTierBlend,
   sourceTierSignal,
@@ -279,7 +281,7 @@ function scoreCluster(
     independentOwners,
     maxTier: maxTierValue(cluster, profile),
     technicalSignificance,
-    freshestMs: new Date(cluster.latestPublishedAt).valueOf() || 0,
+    freshestMs: (() => { const t = new Date(cluster.latestPublishedAt).valueOf(); return Number.isFinite(t) ? t : 0; })(),
     topicKeyHash: stableHashNumber(cluster.clusterId),
   };
 
@@ -392,6 +394,10 @@ export function runRanking(
   aggregation: AggregationArtifact,
   options: RankingOptions = {},
 ): RankingArtifact {
+  // #26: validate input before any scoring — gives callers a clear error rather
+  // than NaN-poisoned output when the artifact is structurally invalid.
+  validateAggregationArtifact(aggregation);
+
   const profile = getWeightProfile(options.weightProfile ?? DEFAULT_WEIGHT_PROFILE);
   const now = options.now ?? new Date();
   const warnings: string[] = [...aggregation.warnings];

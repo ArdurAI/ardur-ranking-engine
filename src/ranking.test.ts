@@ -829,7 +829,8 @@ test('runRanking: RankedCluster.gateStatus is set from editorial gate', () => {
 
 test('runRanking: factsByCluster passed through in output data', () => {
   const cluster = makeCluster({ clusterId: 'c-pt', memberIds: [] });
-  const facts: ExtractedFact[] = [makeFact({ id: 'pt1', clusterId: 'c-pt', corroboration: 0.5 })];
+  // corroboration must be an integer >= 1 per ExtractedFactSchema (#13/#26)
+  const facts: ExtractedFact[] = [makeFact({ id: 'pt1', clusterId: 'c-pt', corroboration: 1 })];
 
   const artifact = makeArtifact({ kubernetes: [cluster] });
   artifact.data.factsByCluster = { 'c-pt': facts };

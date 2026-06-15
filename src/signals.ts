@@ -94,10 +94,23 @@ export function engagementScore(
   return count === 0 ? 0 : Math.min(1, sum / count);
 }
 
-/** Hours between a timestamp and `now` (never negative). */
-export function ageHoursSince(isoTimestamp: string, now: Date): number {
+/**
+ * Neutral floor age used when a timestamp is absent or invalid.
+ * Returning 0 would give recencyDecay(0, H) = 1.0 (max), which is misleading
+ * for a cluster whose publication time is unknown.  24 h is a documented
+ * conservative midpoint that does not unfairly penalise or boost such clusters.
+ */
+export const NEUTRAL_AGE_HOURS = 24;
+
+/** Hours between a timestamp and `now` (never negative).
+ *
+ * Returns NEUTRAL_AGE_HOURS when the timestamp is absent or invalid so that
+ * missing/bad timestamps do not receive the maximum recency score (1.0).
+ */
+export function ageHoursSince(isoTimestamp: string | undefined | null, now: Date): number {
+  if (!isoTimestamp) return NEUTRAL_AGE_HOURS;
   const then = new Date(isoTimestamp).valueOf();
-  if (!Number.isFinite(then)) return 0;
+  if (!Number.isFinite(then)) return NEUTRAL_AGE_HOURS;
   return Math.max(0, (now.valueOf() - then) / 3_600_000);
 }
 
@@ -241,12 +254,44 @@ const VELOCITY_BASELINE_PER_HOUR = 5.0;
 // ---------------------------------------------------------------------------
 
 /**
+ * Well-known two-part TLDs used by registrableDomain.
+ *
+ * This definition is MIRRORED verbatim in ardur-ranking-engine and
+ * ardur-news-aggregator — edit both repos in lockstep.
+ */
+const KNOWN_TWO_PART_TLDS = new Set([
+  'co.uk', 'co.jp', 'co.nz', 'co.za', 'co.in', 'co.kr', 'co.id', 'co.il',
+  'com.au', 'com.br', 'com.mx', 'com.ar', 'com.co', 'com.sg', 'com.hk', 'com.tw',
+  'org.uk', 'net.au', 'net.nz', 'ac.uk', 'gov.uk', 'edu.au', 'edu.sg',
+]);
+
+/**
+ * Reduce a raw hostname to its registrable domain (eTLD+1 heuristic).
+ *
+ * Handles the most common two-part TLDs (co.uk, com.au, etc.) without
+ * requiring a Public Suffix List dependency.  Subdomains of the same
+ * publisher collapse to one key so they can't inflate corroboration.
+ *
+ * This definition is MIRRORED verbatim in ardur-ranking-engine and
+ * ardur-news-aggregator — edit both repos in lockstep.
+ */
+function registrableDomain(hostname: string): string {
+  const parts = hostname.split('.');
+  if (parts.length <= 2) return hostname;
+  const last2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (KNOWN_TWO_PART_TLDS.has(last2) && parts.length >= 3) {
+    return `${parts[parts.length - 3]}.${last2}`;
+  }
+  return last2;
+}
+
+/**
  * Normalize a raw sourceDomain string for owner-dedup (CWE-20 defence).
  *
  * Strips userinfo (`user@`), port (`:8080`), and the `www.` prefix, then
- * lowercases.  Two URLs that differ only in these inert components (e.g.
- * "WWW.Example.com", "example.com:443", "cdn@example.com") collapse to the
- * same key so they aren't counted as separate independent owners.
+ * lowercases and reduces to the registrable domain (eTLD+1) so that
+ * subdomains of the same publisher (news.example.com, blog.example.com)
+ * collapse to a single key and cannot inflate corroboration.
  */
 export function normalizeOwnerDomain(domain: string): string {
   let d = domain.toLowerCase().trim();
@@ -254,11 +299,11 @@ export function normalizeOwnerDomain(domain: string): string {
   const atIdx = d.lastIndexOf('@');
   if (atIdx >= 0) d = d.slice(atIdx + 1);
   // Strip port (e.g. "example.com:8080" → "example.com")
-  const portIdx = d.lastIndexOf(':');
-  if (portIdx >= 0) d = d.slice(0, portIdx);
+  const colonIdx = d.lastIndexOf(':');
+  if (colonIdx >= 0) d = d.slice(0, colonIdx);
   // Strip www. prefix (e.g. "www.example.com" → "example.com")
   if (d.startsWith('www.')) d = d.slice(4);
-  return d;
+  return registrableDomain(d);  // collapse subdomains to eTLD+1
 }
 
 /**
