@@ -11,7 +11,7 @@ Implements the finalized Ardur topic-rating model (design:
 [`docs/spec.md`](./docs/spec.md)). The **full scoring engine is implemented** —
 all four signal extractors, recency decay, diversity, confidence gating,
 tie-breaking, audit trail, and `runRanking()` orchestration. Deterministic, no
-paid-API dependency, 41 tests green.
+paid-API dependency, 141 tests green.
 
 ## The model
 
@@ -76,12 +76,11 @@ flowchart LR
   can recompute the score.
 - `weightProfile` — the profile id+version applied (`balanced@v1`).
 
-> **Contract note.** The shared `ScoreBreakdown` predates this model and has no
-> typed slot for the Technical-significance *component value*. It is mapped
-> faithfully (C/S/E + recency/diversity multipliers + all four weights), and the
-> full breakdown including **T** is preserved losslessly in the audit `inputs`.
-> A contract revision is tracked as an issue — the shared file is **not** edited
-> in this repo.
+> **Contract note.** As of Rev 3, `ScoreBreakdown` has a typed
+> `technicalSignificance` field and `toScoreBreakdown()` emits it — the mapping
+> is fully lossless (C / T / S / E + recency / diversity multipliers + all four
+> weights). The audit `inputs` still carry the complete per-signal breakdown for
+> independent recomputation.
 
 ## Project layout
 
@@ -93,7 +92,7 @@ flowchart LR
 | `src/score.ts` | Score combination, confidence + gate, tie-breaks, contract mapping. |
 | `src/audit.ts` | Lossless, reproducible audit-entry construction. |
 | `src/index.ts` | `runRanking()` entrypoint + public surface. |
-| `src/cli.ts` | Rank an artifact from stdin/file. |
+| `src/runners.ts` | CLI entrypoint: `--in/--out/--now/--run-id/--describe`; structured error envelope. |
 | `src/model.test.ts` | Conformance tests against the spec's worked values. |
 | `src/ranking.test.ts` | Integration + boundary tests for signal extractors and `runRanking`. |
 

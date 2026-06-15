@@ -125,8 +125,9 @@ Stage payloads: `AggregationData` → `RankingData` → `Top10Data` → `Article
 - **Additive** changes (new optional field) → no version bump; consumers ignore unknowns.
 - **Breaking** changes (rename/remove/retype) → bump `SCHEMA_VERSION`, update all four
   repos in the same change set, and gate consumers on the version they accept.
-- The contract file is **vendored**, not published as a package, to keep each repo
-  buildable in isolation. A future `@ardurai/pipeline-contracts` package may replace it.
+- The contract is consumed as the **`@ardurai/contracts`** npm package. Each repo's
+  `src/contracts.ts` is a thin re-export from that package — do not edit the re-export;
+  contract changes go through the `@ardurai/contracts` package instead.
 
 ## 6. Cross-cutting guarantees (every engine enforces)
 

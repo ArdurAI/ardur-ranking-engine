@@ -191,7 +191,7 @@ export function compareForRank(a: TieBreakKeys, b: TieBreakKeys, profile: Weight
 }
 
 // ---------------------------------------------------------------------------
-// Mapping onto the shared contract (lossy by design — see CONTRACT NOTE above).
+// Mapping onto the shared contract (lossless as of Rev 3 — technicalSignificance is a typed field).
 // ---------------------------------------------------------------------------
 
 /**

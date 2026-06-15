@@ -133,7 +133,13 @@ export const BALANCED_V1: WeightProfile = {
     },
   },
   engagement: {
-    platformCaps: { hn: 1.0, github: 1.0, reddit: 1.0, lobsters: 1.0 },
+    // 'feed' is the aggregate key emitted by platformVelocities (all platforms
+    // summed and normalized by VELOCITY_BASELINE_PER_HOUR = 5.0 mentions/h).
+    // Cap at 10.0 (= 2× the 5 mentions/hour baseline) so a single
+    // high-velocity cluster cannot dominate the engagement signal.
+    // The per-platform keys (hn, github, reddit, lobsters) are retained for
+    // when real per-platform velocity extraction lands (issue #25b).
+    platformCaps: { feed: 10.0, hn: 1.0, github: 1.0, reddit: 1.0, lobsters: 1.0 },
   },
   aiPlatformSignificanceBonus: 0.1,
   clustering: { similarityThreshold: 0.6, timeWindowHours: 48 },

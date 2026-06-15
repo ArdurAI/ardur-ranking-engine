@@ -3,8 +3,9 @@
  * normalized loudly, never silently emitting NaN / null into the pipeline.
  *
  * Covers QA issues:
- *   #7 — unknown tier enum in tierHistogram / member items must not produce NaN
- *   #8 — validateAggregationArtifact must reject malformed input with clear errors
+ *   #7  — unknown tier enum in tierHistogram / member items must not produce NaN
+ *   #8  — validateAggregationArtifact must reject malformed input with clear errors
+ *   #24 — single crafted member title must not pump technicalSignificance to ≥0.75
  */
 
 import { test } from 'node:test';
@@ -12,7 +13,7 @@ import assert from 'node:assert/strict';
 import type { AggregatedItem, Cluster } from './contracts.ts';
 import { SCHEMA_VERSION } from './contracts.ts';
 import { BALANCED_V1 } from './weights.ts';
-import { tierValue, sourceTierSignal, countIndependentOwners } from './signals.ts';
+import { tierValue, sourceTierSignal, countIndependentOwners, technicalSignificanceSignal } from './signals.ts';
 import { runRanking } from './index.ts';
 import { validateAggregationArtifact } from './validate.ts';
 import type { SourceTier } from './contracts.ts';
@@ -296,4 +297,43 @@ test('#8 validateAggregationArtifact: accepts a minimal well-formed artifact', (
     data: { clustersByTopic: {}, itemsByTopic: {}, coverageByTopic: {} },
   };
   assert.doesNotThrow(() => validateAggregationArtifact(minimal));
+});
+
+// ---------------------------------------------------------------------------
+// Issue #24 — anti-gaming: single planted member must not pump T to ≥0.75
+// ---------------------------------------------------------------------------
+
+test('#24 technicalSignificanceSignal: single-member cluster with high-value phrase is capped at 0.65', () => {
+  const cluster = makeCluster({
+    clusterId: 'c-benign',
+    headline: 'minor library update',
+  });
+  // One member whose title contains a phrase that would normally score 0.95.
+  const hostileMember = makeItem({
+    id: 'planted-member',
+    clusterId: 'c-benign',
+    title: 'unrelated zero-day exploited in the wild',
+  });
+  const T = technicalSignificanceSignal({ cluster, members: [hostileMember], now: NOW, profile: P });
+  assert.ok(T <= 0.65, `single-member T must be ≤ 0.65, got ${T}`);
+});
+
+test('#24 technicalSignificanceSignal: two-member cluster retains full high-value significance', () => {
+  const cluster = makeCluster({
+    clusterId: 'c-multi',
+    headline: 'zero-day exploited in the wild',
+  });
+  const m1 = makeItem({ id: 'm1', clusterId: 'c-multi', title: 'zero-day exploited in the wild', sourceDomain: 'a.example' });
+  const m2 = makeItem({ id: 'm2', clusterId: 'c-multi', title: 'critical rce actively exploited', sourceDomain: 'b.example' });
+  const T = technicalSignificanceSignal({ cluster, members: [m1, m2], now: NOW, profile: P });
+  // Two members — cap does not apply; T should be ≥ 0.75 (0.95 rule matched in headline + both members).
+  assert.ok(T >= 0.75, `two-member cluster with high-value phrases should retain T ≥ 0.75, got ${T}`);
+});
+
+test('#24 technicalSignificanceSignal: single-member with lower rule value is not affected by cap', () => {
+  const cluster = makeCluster({ clusterId: 'c-low', headline: 'minor library update' });
+  const m1 = makeItem({ id: 'low1', clusterId: 'c-low', title: 'security advisory patch released' });
+  const T = technicalSignificanceSignal({ cluster, members: [m1], now: NOW, profile: P });
+  // 0.55 rule — below 0.75 threshold; cap should not apply.
+  assert.ok(T < 0.75, `low-significance single-member cluster should be below 0.75, got ${T}`);
 });

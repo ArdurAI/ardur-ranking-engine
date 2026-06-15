@@ -340,16 +340,37 @@ export function countIndependentOwners(input: SignalInputs): number {
  * Default noise floor is 0.20 (unclassified content that still carries some
  * signal due to source-tier and corroboration filtering upstream).
  */
-export function technicalSignificanceSignal(input: SignalInputs): number {
-  const corpus = buildCorpus(input);
-  let maxValue = 0.20;
+/** Compute the max matched rule value over a text corpus. */
+function maxRuleMatch(text: string): number {
+  let max = 0.20;
   for (const rule of SIGNIFICANCE_RULES) {
-    if (rule.pattern.test(corpus)) {
-      maxValue = Math.max(maxValue, rule.value);
+    if (rule.pattern.test(text)) {
+      max = Math.max(max, rule.value);
     }
   }
+  return max;
+}
+
+export function technicalSignificanceSignal(input: SignalInputs): number {
+  const corpus = buildCorpus(input);
+  let maxValue = maxRuleMatch(corpus);
   if (AI_PLATFORM_PATTERN.test(corpus)) {
     maxValue = Math.min(1, maxValue + input.profile.aiPlatformSignificanceBonus);
+  }
+  // Anti-gaming: when there is only 1 member, a high significance value (≥0.75)
+  // is only allowed if the cluster headline itself already reaches ≥0.75 (i.e.,
+  // the headline, not just the single member's title, justifies the rating).
+  // This prevents a single planted low-tier member from pumping T via its title.
+  if (maxValue >= 0.75 && input.members.length === 1) {
+    const headlineCorpus = [
+      input.cluster.headline,
+      input.cluster.topic,
+      input.cluster.topicLabel,
+    ].join(' ').toLowerCase();
+    const headlineMax = maxRuleMatch(headlineCorpus);
+    if (headlineMax < 0.75) {
+      maxValue = Math.min(maxValue, 0.65);
+    }
   }
   return clamp(maxValue, 0, 1);
 }
