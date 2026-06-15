@@ -174,7 +174,13 @@ export interface TieBreakKeys {
 
 /** Comparator for descending rank order with the §2.6 tie-break cascade. */
 export function compareForRank(a: TieBreakKeys, b: TieBreakKeys, profile: WeightProfile): number {
-  if (Math.abs(a.score - b.score) >= profile.tieBreakEpsilon) return b.score - a.score;
+  // Quantize to ε-wide buckets first — this makes the primary key transitive.
+  // The old |Δscore| < ε check was not transitive: A≈B and B≈C does not imply
+  // A≈C, which could cause sort() to cycle (violating strict weak ordering).
+  const bucketA = Math.round(a.score / profile.tieBreakEpsilon);
+  const bucketB = Math.round(b.score / profile.tieBreakEpsilon);
+  if (bucketA !== bucketB) return bucketB - bucketA;
+  // Within the same bucket, apply the §2.6 cascade:
   if (a.independentOwners !== b.independentOwners) return b.independentOwners - a.independentOwners;
   if (a.maxTier !== b.maxTier) return b.maxTier - a.maxTier;
   if (a.technicalSignificance !== b.technicalSignificance) {

@@ -513,6 +513,70 @@ test('#18 T-signal ordering preserved: high-T security cluster beats low-T clust
     `#18: security cluster score ${ranked[0]!.score.total} must exceed blog ${ranked[1]!.score.total}`);
 });
 
+// ---------------------------------------------------------------------------
+// #21 — runRanking produces identical rankedByTopic regardless of input order.
+//        Tests that sort() is stable across permutations (relies on the
+//        quantized-bucket comparator being a valid strict weak ordering).
+// ---------------------------------------------------------------------------
+
+test('#21 runRanking: rankedByTopic order is identical regardless of clustersByTopic input order', () => {
+  // Three clusters with scores that span a single ε-bucket boundary:
+  //   - c-hi: high technical-significance, T1 primary → highest score
+  //   - c-mid: medium tech-sig, 2 owners → middle score
+  //   - c-lo: low tech-sig, 1 owner, news tier → lowest score
+  const NOW_21 = new Date('2026-06-15T12:00:00Z');
+
+  const iHi = makeItem({ id: 'i-hi', clusterId: 'c-hi', tier: 'primary', sourceDomain: 'kubernetes.io',
+    title: 'CVE-2026-1234 critical RCE vulnerability exploited in the wild CVSS 9.8' });
+  const clusterHi = makeCluster({ clusterId: 'c-hi', memberIds: ['i-hi'],
+    headline: 'CVE-2026-1234 critical RCE vulnerability exploited in the wild',
+    distinctDomains: 1, tierHistogram: { primary: 1 } });
+
+  const iMid1 = makeItem({ id: 'i-mid1', clusterId: 'c-mid', tier: 'technical-news', sourceDomain: 'devblog-a.io',
+    title: 'Kubernetes v1.30 patch release notes' });
+  const iMid2 = makeItem({ id: 'i-mid2', clusterId: 'c-mid', tier: 'technical-news', sourceDomain: 'devblog-b.io',
+    title: 'Kubernetes v1.30 release patch' });
+  const clusterMid = makeCluster({ clusterId: 'c-mid', memberIds: ['i-mid1', 'i-mid2'],
+    headline: 'Kubernetes v1.30 patch release', distinctDomains: 2,
+    tierHistogram: { 'technical-news': 2 } });
+
+  const iLo = makeItem({ id: 'i-lo', clusterId: 'c-lo', tier: 'technical-news', sourceDomain: 'generic-blog.io',
+    title: 'Some conference recap recap blog post press release announcement' });
+  const clusterLo = makeCluster({ clusterId: 'c-lo', memberIds: ['i-lo'],
+    headline: 'Conference recap blog post', distinctDomains: 1,
+    tierHistogram: { 'technical-news': 1 } });
+
+  const items = { kubernetes: [iHi, iMid1, iMid2, iLo] };
+
+  // Run with clusters in original order [hi, mid, lo]
+  const resultABC = runRanking(
+    makeArtifact({ kubernetes: [clusterHi, clusterMid, clusterLo] }, items),
+    { now: NOW_21 },
+  );
+  // Run with clusters in reversed order [lo, mid, hi]
+  const resultCBA = runRanking(
+    makeArtifact({ kubernetes: [clusterLo, clusterMid, clusterHi] }, items),
+    { now: NOW_21 },
+  );
+  // Run with clusters in a different permutation [mid, lo, hi]
+  const resultBCA = runRanking(
+    makeArtifact({ kubernetes: [clusterMid, clusterLo, clusterHi] }, items),
+    { now: NOW_21 },
+  );
+
+  const rankedABC = resultABC.data.rankedByTopic['kubernetes']!.map((c) => c.clusterId);
+  const rankedCBA = resultCBA.data.rankedByTopic['kubernetes']!.map((c) => c.clusterId);
+  const rankedBCA = resultBCA.data.rankedByTopic['kubernetes']!.map((c) => c.clusterId);
+
+  assert.deepEqual(rankedCBA, rankedABC,
+    `#21: reversed input order must produce same rank order. Got ${rankedCBA.join(',')} vs ${rankedABC.join(',')}`);
+  assert.deepEqual(rankedBCA, rankedABC,
+    `#21: permuted input order must produce same rank order. Got ${rankedBCA.join(',')} vs ${rankedABC.join(',')}`);
+
+  // Sanity: the highest cluster (c-hi, T1 primary) should rank first.
+  assert.equal(rankedABC[0], 'c-hi', '#21: T1 primary high-T cluster must rank first');
+});
+
 test('#18 T-signal ordering: graded corroboration values produce graded C scores (not flat 1.0)', () => {
   // Verify that the saturation curve produces graded signals across typical owner counts.
   const c1 = factCorroborationSignal([makeFact({ id: 'g1', clusterId: 'c', corroboration: 1 })], P);

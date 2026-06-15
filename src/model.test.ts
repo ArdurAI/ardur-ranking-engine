@@ -134,6 +134,53 @@ test('tie-break cascade: within ε, more owners wins; else score', () => {
   assert.ok(compareForRank(base, higherScore, P) > 0); // higher score ranks first
 });
 
+// ---------------------------------------------------------------------------
+// #21 — compareForRank must satisfy strict weak ordering (transitivity).
+//        The old |Δscore| < ε check was not transitive; quantized buckets fix it.
+// ---------------------------------------------------------------------------
+
+test('#21 compareForRank transitivity: A<B and B<C implies A<C for scores 0.500/0.505/0.510 (ε=0.01)', () => {
+  // All three scores fall within a single ε=0.01 bucket (bucket 50), so
+  // tie-breaking falls through to the §2.6 cascade.  We differentiate them
+  // by independentOwners so the expected order is C > B > A.
+  const a: TieBreakKeys = {
+    score: 0.500, independentOwners: 1, maxTier: 0.5, technicalSignificance: 0.5, freshestMs: 1000, topicKeyHash: 1,
+  };
+  const b: TieBreakKeys = {
+    score: 0.505, independentOwners: 2, maxTier: 0.5, technicalSignificance: 0.5, freshestMs: 1000, topicKeyHash: 2,
+  };
+  const c: TieBreakKeys = {
+    score: 0.510, independentOwners: 3, maxTier: 0.5, technicalSignificance: 0.5, freshestMs: 1000, topicKeyHash: 3,
+  };
+
+  // All in same bucket → ordered by independentOwners
+  const ab = compareForRank(a, b, P); // a has fewer owners → positive (b ranks first)
+  const bc = compareForRank(b, c, P); // b has fewer owners than c → positive (c ranks first)
+  const ac = compareForRank(a, c, P); // a has fewer owners than c → positive (c ranks first)
+
+  assert.ok(ab > 0, `compareForRank(a,b) should be >0 (b ranks first), got ${ab}`);
+  assert.ok(bc > 0, `compareForRank(b,c) should be >0 (c ranks first), got ${bc}`);
+  assert.ok(ac > 0, `compareForRank(a,c) should be >0 (c ranks first) — transitivity, got ${ac}`);
+
+  // Additionally confirm there is no cycle: if ab>0 and bc>0 then ac must also be >0.
+  const hasCycle = ab > 0 && bc > 0 && ac <= 0;
+  assert.ok(!hasCycle, '#21: compareForRank must not cycle (A<B, B<C → A<C)');
+});
+
+test('#21 compareForRank: scores in different ε-buckets always use bucket order, not proximity', () => {
+  // 0.500 and 0.510 differ by exactly ε → they fall into different buckets
+  // (bucket 50 vs 51 when ε=0.01), so the one with higher score ranks first
+  // regardless of tie-break keys.
+  const lo: TieBreakKeys = {
+    score: 0.500, independentOwners: 99, maxTier: 1.0, technicalSignificance: 1.0, freshestMs: 9999, topicKeyHash: 9,
+  };
+  const hi: TieBreakKeys = {
+    score: 0.510, independentOwners: 1, maxTier: 0.0, technicalSignificance: 0.0, freshestMs: 0, topicKeyHash: 0,
+  };
+  const cmp = compareForRank(lo, hi, P);
+  assert.ok(cmp > 0, `#21: higher-bucket score must rank first even with worse tie-break keys, got ${cmp}`);
+});
+
 test('audit entry is lossless + reproducible + deterministically identified', () => {
   const rating = computeScore(
     { corroboration: 0.63, technicalSignificance: 0.9, sourceTier: 0.85, engagement: 0.4 },
