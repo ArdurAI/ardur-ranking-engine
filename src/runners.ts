@@ -23,7 +23,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runRanking } from './index.ts';
 import { validateAggregationArtifact } from './validate.ts';
-import { SCHEMA_VERSION, CONTRACT_REVISION } from './contracts.ts';
+import { SCHEMA_VERSION, CONTRACT_REVISION, assertCompatibleArtifact } from './contracts.ts';
+import { parseRankingArtifact } from '@ardurai/contracts/zod';
 import type { AggregationArtifact } from './contracts.ts';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,7 @@ type ErrorCode =
   | 'IO_READ'
   | 'IO_WRITE'
   | 'RANKING_FAILED'
+  | 'OUTPUT_VALIDATION_FAILED'
   | 'INVALID_FLAG'
   | 'MISSING_FLAG_VALUE';
 
@@ -388,6 +390,20 @@ function main(): void {
       'RANKING_FAILED',
       'unexpected error during ranking',
       err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // Pre-emit self-validation: Zod-validate the ranking artifact before writing
+  // so a schema regression in the engine fails here (with detail) instead of
+  // at the downstream top10 engine's input gate (with a truncated error).
+  try {
+    assertCompatibleArtifact(ranking, 'ranking');
+    parseRankingArtifact(ranking as unknown);
+  } catch (validateErr) {
+    emitError(
+      'OUTPUT_VALIDATION_FAILED',
+      'ranking artifact failed pre-emit Zod validation',
+      validateErr instanceof Error ? validateErr.message : String(validateErr),
     );
   }
 

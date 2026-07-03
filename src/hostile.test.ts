@@ -219,12 +219,25 @@ test('#8 validateAggregationArtifact: rejects wrong artifact type', () => {
   );
 });
 
+const BASE_ENVELOPE = {
+  schemaVersion: SCHEMA_VERSION,
+  artifact: 'aggregation',
+  runId: 'test-run',
+  generatedAt: '2026-06-11T06:00:00.000Z',
+  cycle: {
+    id: '2026-06-11T06:00:00.000Z',
+    windowStart: '2026-06-11T06:00:00.000Z',
+    windowEnd: '2026-06-11T12:00:00.000Z',
+  },
+  topics: [],
+  warnings: [],
+} as const;
+
 test('#8 validateAggregationArtifact: rejects missing data field', () => {
   assert.throws(
     () =>
       validateAggregationArtifact({
-        schemaVersion: SCHEMA_VERSION,
-        artifact: 'aggregation',
+        ...BASE_ENVELOPE,
         cycle: {},
       }),
     /non-null object at .data/,
@@ -233,16 +246,14 @@ test('#8 validateAggregationArtifact: rejects missing data field', () => {
 
 test('#8 validateAggregationArtifact: rejects data as array', () => {
   // Array passes the generic envelope gate (typeof [] === 'object') but fails
-  // the engine-specific clustersByTopic structural check.
+  // the contracts data-object check or the engine-specific clustersByTopic check.
   assert.throws(
     () =>
       validateAggregationArtifact({
-        schemaVersion: SCHEMA_VERSION,
-        artifact: 'aggregation',
+        ...BASE_ENVELOPE,
         data: [],
-        cycle: {},
       }),
-    /clustersByTopic/,
+    /non-null object at .data|clustersByTopic/,
   );
 });
 
@@ -250,10 +261,8 @@ test('#8 validateAggregationArtifact: rejects missing data.clustersByTopic', () 
   assert.throws(
     () =>
       validateAggregationArtifact({
-        schemaVersion: SCHEMA_VERSION,
-        artifact: 'aggregation',
+        ...BASE_ENVELOPE,
         data: { itemsByTopic: {} },
-        cycle: {},
       }),
     /clustersByTopic/,
   );
@@ -263,10 +272,8 @@ test('#8 validateAggregationArtifact: rejects missing data.itemsByTopic', () => 
   assert.throws(
     () =>
       validateAggregationArtifact({
-        schemaVersion: SCHEMA_VERSION,
-        artifact: 'aggregation',
+        ...BASE_ENVELOPE,
         data: { clustersByTopic: {} },
-        cycle: {},
       }),
     /itemsByTopic/,
   );
@@ -276,9 +283,9 @@ test('#8 validateAggregationArtifact: rejects missing cycle field', () => {
   assert.throws(
     () =>
       validateAggregationArtifact({
-        schemaVersion: SCHEMA_VERSION,
-        artifact: 'aggregation',
+        ...BASE_ENVELOPE,
         data: { clustersByTopic: {}, itemsByTopic: {} },
+        cycle: undefined,
       }),
     /cycle/,
   );

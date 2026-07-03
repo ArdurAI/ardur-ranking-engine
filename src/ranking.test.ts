@@ -15,7 +15,7 @@ import type {
   ExtractedFact,
   TopicMeta,
 } from './contracts.ts';
-import { SCHEMA_VERSION } from './contracts.ts';
+import { SCHEMA_VERSION, CONTRACT_REVISION } from './contracts.ts';
 import { BALANCED_V1 } from './weights.ts';
 import {
   corroborationScore,
@@ -885,5 +885,5 @@ test('audit entry: confidence calibration inputs are recorded (ENGINE-007 #5)', 
 
 test('contractRevision is stamped on ranking artifact', () => {
   const result = runRanking(makeArtifact({}), { now: NOW });
-  assert.equal(result.contractRevision, 3);
+  assert.equal(result.contractRevision, CONTRACT_REVISION);
 });
