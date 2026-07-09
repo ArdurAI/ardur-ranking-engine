@@ -36,7 +36,7 @@
     "url": "https://github.com/ArdurAI/ardur-ranking-engine.git"
   },
   "dependencies": {
-    "@ardurai/contracts": "github:ArdurAI/ardur-contracts#5fb07d32d476b86ee05175f37ff5d96d844754cf",
+    "@ardurai/contracts": "github:ArdurAI/ardur-contracts#e9f3d053a8202757dd4163869731a48f95a2f67b",
     "zod": "^3.25.76"
   },
   "devDependencies": {
